@@ -59,9 +59,9 @@ void Raw12ToBayer16Pipeline::data_received(uint8_t *data,  uint32_t length)
 {
     uint8_t byte;
 
-    assert(bcm_pipe->header.omx_data.raw_width == 6112); 
-    assert(ccd->getXRes() == 4056);
-    assert(ccd->getYRes() == 3040);
+//    assert(bcm_pipe->header.omx_data.raw_width == 6112); 
+//    assert(ccd->getXRes() == 4056);
+//    assert(ccd->getYRes() == 3040);
 
     int maxX = ccd->getSubW();
     int maxY = ccd->getSubH();

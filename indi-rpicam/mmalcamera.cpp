@@ -38,7 +38,7 @@ MMALCamera::MMALCamera(int n) : MMALComponent(MMAL_COMPONENT_DEFAULT_CAMERA), ca
 
     getSensorInfo();
 
-    selectSensorConfig(0 /* What ever 0 means */);
+    selectSensorConfig(2 /* What ever 0 means */);
 
     configureCamera();
 
@@ -253,7 +253,7 @@ void MMALCamera::getSensorInfo()
     }
    
     if (!strcmp(cameraModel, "imx477")) {
-        xPixelSize = yPixelSize = 1.55F;
+        xPixelSize = yPixelSize = 3.1F;
     }
     else if (!strcmp(cameraModel, "ov5647")) {
         xPixelSize = yPixelSize = 1.4F;

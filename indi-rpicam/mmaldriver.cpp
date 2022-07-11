@@ -67,13 +67,13 @@ void MMALDriver::assert_framebuffer(INDI::CCDChip *ccd)
 {
     LOGF_DEBUG("%s()", __FUNCTION__);
     int nbuf = (ccd->getXRes() * ccd->getYRes() * (ccd->getBPP() / 8));
-    int expected = 4056 * 3040 * 2;
+   /* int expected = 4056 * 3040 * 2;
     if (nbuf != expected)
     {
         LOGF_DEBUG("%s: frame buffer size set to %d", __FUNCTION__, nbuf);
         LOGF_ERROR("%s: Wrong size of framebuffer: %d, expected %d", __FUNCTION__, nbuf, expected);
         exit(1);
-    }
+    }*/
 
     LOGF_DEBUG("%s: frame buffer size set to %d", __FUNCTION__, nbuf);
 }
@@ -147,13 +147,13 @@ bool MMALDriver::Connect()
     camera_control->add_pipeline(raw_pipe.get());
 
 
-    SetCCDParams(static_cast<int>(camera_control->get_camera()->get_width()),
-                 static_cast<int>(camera_control->get_camera()->get_height()),
+    SetCCDParams(2028,
+                 1520,
                  16,
                  camera_control->get_camera()->xPixelSize,
                  camera_control->get_camera()->yPixelSize);
 
-    uint32_t nbuf = PrimaryCCD.getXRes() * PrimaryCCD.getYRes() * PrimaryCCD.getBPP() / 8;
+    uint32_t nbuf = 2028 * 1520 * PrimaryCCD.getBPP() / 8;
     PrimaryCCD.setFrameBufferSize(nbuf);
     //V1 cam
     if (!strcmp(camera_control->get_camera()->getModel(), "ov5647"))

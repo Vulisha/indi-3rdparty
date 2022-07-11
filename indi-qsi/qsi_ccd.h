@@ -45,40 +45,40 @@ public:
     QSICCD();
     virtual ~QSICCD();
 
-    virtual bool ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n) override;
-    virtual bool ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n) override;
-    virtual bool ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n) override;
+    virtual bool ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n);
+    virtual bool ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n);
+    virtual bool ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n);
 
 protected:
 
-    const char *getDefaultName() override;
+    const char *getDefaultName();
 
-    bool initProperties() override;
-    bool updateProperties() override;
+    bool initProperties();
+    bool updateProperties();
 
-    bool Connect() override;
-    bool Disconnect() override;
+    bool Connect();
+    bool Disconnect();
 
-    int SetTemperature(double temperature) override;
-    bool StartExposure(float duration) override;
-    bool AbortExposure() override;
+    int SetTemperature(double temperature);
+    bool StartExposure(float duration);
+    bool AbortExposure();
 
-    void TimerHit() override;
-    bool saveConfigItems(FILE *fp) override;
+    void TimerHit();
+    bool saveConfigItems(FILE *fp);
 
-    virtual bool UpdateCCDFrame(int x, int y, int w, int h) override;
-    virtual bool UpdateCCDBin(int binx, int biny) override;
-    virtual void addFITSKeywords(INDI::CCDChip *targetChip) override;
+    virtual bool UpdateCCDFrame(int x, int y, int w, int h);
+    virtual bool UpdateCCDBin(int binx, int biny);
+    virtual void addFITSKeywords(fitsfile *fptr, INDI::CCDChip *targetChip);
 
-    virtual IPState GuideNorth(uint32_t ms) override;
-    virtual IPState GuideSouth(uint32_t ms) override;
-    virtual IPState GuideEast(uint32_t ms) override;
-    virtual IPState GuideWest(uint32_t ms) override;
+    virtual IPState GuideNorth(uint32_t ms);
+    virtual IPState GuideSouth(uint32_t ms);
+    virtual IPState GuideEast(uint32_t ms);
+    virtual IPState GuideWest(uint32_t ms);
 
-    virtual bool GetFilterNames() override;
-    virtual bool SetFilterNames() override;
-    virtual bool SelectFilter(int) override;
-    virtual int QueryFilter() override;
+    virtual bool GetFilterNames();
+    virtual bool SetFilterNames();
+    virtual bool SelectFilter(int);
+    virtual int QueryFilter();
 
     INumber CoolerN[1];
     INumberVectorProperty CoolerNP;

@@ -1,6 +1,6 @@
 /*
- SVBONY CCD
- SVBONY CCD Camera driver
+ SV305 CCD
+ SVBONY SV305 Camera driver
  Copyright (C) 2020-2021 Blaise-Florentin Collin (thx8411@yahoo.fr)
 
  Generic CCD skeleton Copyright (C) 2012 Jasem Mutlaq (mutlaqja@ikarustech.com)
@@ -34,13 +34,13 @@
 #include "eventloop.h"
 #include "stream/streammanager.h"
 
-#include "libsvbony/SVBCameraSDK.h"
+#include "libsv305/SVBCameraSDK.h"
 
-#include "svbony_ccd.h"
+#include "sv305_ccd.h"
 
 static class Loader
 {
-        std::deque<std::unique_ptr<SVBONYCCD>> cameras;
+        std::deque<std::unique_ptr<Sv305CCD>> cameras;
     public:
         Loader()
         {
@@ -54,26 +54,26 @@ static class Loader
 
             IDLog("Camera(s) found\n");
 
-            // create SVBONYCCD object for each camera
+            // create Sv305CCD object for each camera
             for(int i = 0; i < cameraCount; i++)
             {
-                cameras.push_back(std::unique_ptr<SVBONYCCD>(new SVBONYCCD(i)));
+                cameras.push_back(std::unique_ptr<Sv305CCD>(new Sv305CCD(i)));
             }
         }
 } loader;
 
 //////////////////////////////////////////////////
-// SVBONY CLASS
+// SV305 CLASS
 //
 
 
 //
-SVBONYCCD::SVBONYCCD(int numCamera)
+Sv305CCD::Sv305CCD(int numCamera)
 {
     num = numCamera;
 
     // set driver version
-    setVersion(SVBONY_VERSION_MAJOR, SVBONY_VERSION_MINOR);
+    setVersion(SV305_VERSION_MAJOR, SV305_VERSION_MINOR);
 
     // Get camera informations
     status = SVBGetCameraInfo(&cameraInfo, num);
@@ -87,30 +87,69 @@ SVBONYCCD::SVBONYCCD(int numCamera)
     // Set camera name
     snprintf(this->name, 32, "%s %d", cameraInfo.FriendlyName, numCamera);
     setDeviceName(this->name);
+
+    // mutex init
+    pthread_mutex_init(&cameraID_mutex, NULL);
+    pthread_mutex_init(&streaming_mutex, NULL);
 }
 
 
 //
-SVBONYCCD::~SVBONYCCD()
+Sv305CCD::~Sv305CCD()
 {
+    // mutex destroy
+    pthread_mutex_destroy(&cameraID_mutex);
+    pthread_mutex_destroy(&streaming_mutex);
 }
 
 
 //
-const char *SVBONYCCD::getDefaultName()
+const char *Sv305CCD::getDefaultName()
 {
-    return "SVBONY CCD";
+    return "SVBONY SV305";
 }
 
 
 //
-bool SVBONYCCD::initProperties()
+bool Sv305CCD::initProperties()
 {
     // Init parent properties first
     INDI::CCD::initProperties();
 
     // base capabilities
-    uint32_t cap = CCD_CAN_ABORT | CCD_CAN_SUBFRAME | CCD_CAN_BIN | CCD_HAS_STREAMING;
+    uint32_t cap = /* CCD_CAN_ABORT | */ CCD_CAN_SUBFRAME | CCD_CAN_BIN | CCD_HAS_STREAMING;
+
+    // SV305 is a color camera
+    if(strcmp(cameraInfo.FriendlyName, "SVBONY SV305") == 0)
+    {
+        cap |= CCD_HAS_BAYER;
+    }
+
+    // SV305 Pro is a color camera and has an ST4 port
+    if(strcmp(cameraInfo.FriendlyName, "SVBONY SV305PRO") == 0)
+    {
+        cap |= CCD_HAS_BAYER;
+        cap |= CCD_HAS_ST4_PORT;
+    }
+
+    // SV305M Pro is a mono camera and has an ST4 port
+    if(strcmp(cameraInfo.FriendlyName, "SVBONY SV305M PRO") == 0)
+    {
+        cap |= CCD_HAS_ST4_PORT;
+    }
+
+    // SV905C is a color camera and has an ST4 port
+    if(strcmp(cameraInfo.FriendlyName, "SVBONY SV905C") == 0)
+    {
+        cap |= CCD_HAS_BAYER;
+        cap |= CCD_HAS_ST4_PORT;
+    }
+
+    // SV405 CCis a color camera
+    if(strcmp(cameraInfo.FriendlyName, "SVBONY SV405CC") == 0)
+    {
+        cap |= (CCD_HAS_BAYER | CCD_HAS_COOLER);
+    }
 
     SetCCDCapability(cap);
 
@@ -121,15 +160,33 @@ bool SVBONYCCD::initProperties()
 
 
 //
-void SVBONYCCD::ISGetProperties(const char *dev)
+void Sv305CCD::ISGetProperties(const char *dev)
 {
     INDI::CCD::ISGetProperties(dev);
 }
 
 
 //
-bool SVBONYCCD::updateProperties()
+bool Sv305CCD::updateProperties()
 {
+#if INDI_VERSION_MAJOR >= 1 && INDI_VERSION_MINOR >= 9 && INDI_VERSION_RELEASE >=5
+    // Set format first if connected.
+    if (isConnected())
+    {
+        // N.B. AFAIK, there is no way to switch image formats.
+        CaptureFormat format;
+        if (GetCCDCapability() & CCD_HAS_BAYER)
+        {
+            format = {"INDI_RAW", "RAW", 16, true};
+        }
+        else
+        {
+            format = {"INDI_MONO", "Mono", 16, true};
+        }
+        addCaptureFormat(format);
+    }
+#endif
+
     INDI::CCD::updateProperties();
 
     if (isConnected())
@@ -137,8 +194,6 @@ bool SVBONYCCD::updateProperties()
 
         // cooler enable
         defineProperty(&CoolerSP);
-	defineProperty(&CoolerNP);
-
         // define controls
         defineProperty(&ControlsNP[CCD_GAIN_N]);
         defineProperty(&ControlsNP[CCD_CONTRAST_N]);
@@ -150,6 +205,8 @@ bool SVBONYCCD::updateProperties()
         defineProperty(&ControlsNP[CCD_GAMMA_N]);
         defineProperty(&ControlsNP[CCD_DOFFSET_N]);
 
+        // define frame format
+        defineProperty(&FormatSP);
         // define frame rate
         defineProperty(&SpeedSP);
 
@@ -164,7 +221,6 @@ bool SVBONYCCD::updateProperties()
 
         // delete cooler enable
         deleteProperty(CoolerSP.name);
-	deleteProperty(CoolerNP.name);
 
         // delete controls
         deleteProperty(ControlsNP[CCD_GAIN_N].name);
@@ -177,6 +233,8 @@ bool SVBONYCCD::updateProperties()
         deleteProperty(ControlsNP[CCD_GAMMA_N].name);
         deleteProperty(ControlsNP[CCD_DOFFSET_N].name);
 
+        // delete frame format
+        deleteProperty(FormatSP.name);
         // delete frame rate
         deleteProperty(SpeedSP.name);
 
@@ -189,18 +247,12 @@ bool SVBONYCCD::updateProperties()
 
 
 //
-bool SVBONYCCD::Connect()
+bool Sv305CCD::Connect()
 {
     // boolean init
     streaming = false;
 
-    LOG_INFO("Attempting to find the SVBONY CCD...\n");
-
-    // init mutex and cond
-    pthread_mutex_init(&cameraID_mutex, NULL);
-    pthread_mutex_init(&streaming_mutex, NULL);
-    pthread_mutex_init(&condMutex, NULL);
-    pthread_cond_init(&cv, NULL);
+    LOG_INFO("Attempting to find the SVBONY SV305 CCD...\n");
 
     pthread_mutex_lock(&cameraID_mutex);
 
@@ -216,15 +268,6 @@ bool SVBONYCCD::Connect()
     // wait a bit for the camera to get ready
     usleep(0.5 * 1e6);
 
-    // disable suto save param
-    status = SVBSetAutoSaveParam(cameraID, SVB_FALSE);
-    if (status != SVB_SUCCESS)
-    {
-        LOG_ERROR("Error, disable auto save param failed.");
-        pthread_mutex_unlock(&cameraID_mutex);
-        return false;
-    }
-
     // get camera properties
     status = SVBGetCameraProperty(cameraID, &cameraProperty);
     if (status != SVB_SUCCESS)
@@ -233,58 +276,6 @@ bool SVBONYCCD::Connect()
         pthread_mutex_unlock(&cameraID_mutex);
         return false;
     }
-    if (isDebug())
-    {
-        // Output camera properties to log 
-        LOGF_DEBUG("Camera Property:\n WxH= %ldx%ld, Color:%d, BayerPattern:%d, MaxBitDepth:%d, IsTriggerCam:%d",
-            cameraProperty.MaxWidth, cameraProperty.MaxHeight,
-            cameraProperty.IsColorCam,
-            cameraProperty.BayerPattern,
-            cameraProperty.MaxBitDepth,
-            cameraProperty.IsTriggerCam);
-        for (int i = 0; (i < (int)(sizeof(cameraProperty.SupportedBins)/sizeof(cameraProperty.SupportedBins[0]))) && cameraProperty.SupportedBins[i] != 0; i++) {
-            LOGF_DEBUG(" Bin %d", cameraProperty.SupportedBins[i]);
-        }
-        for (int i = 0; (i < (int)(sizeof(cameraProperty.SupportedVideoFormat)/sizeof(cameraProperty.SupportedVideoFormat[0]))) && cameraProperty.SupportedVideoFormat[i] != SVB_IMG_END; i++) {
-            LOGF_DEBUG(" Supported Video Format: %d", cameraProperty.SupportedVideoFormat[i]);
-        }
-    }
-
-    // get camera properties ex
-    status = SVBGetCameraPropertyEx(cameraID, &cameraPropertyEx);
-    if (status != SVB_SUCCESS)
-    {
-        LOG_ERROR("Error, get camera property ex failed");
-        pthread_mutex_unlock(&cameraID_mutex);
-        return false;
-    }
-
-    // output camera properties ex to log
-    LOGF_DEBUG("Camera Property Ex:\n SupportPulseGuide:%d, SupportControlTemp:%d",
-        cameraPropertyEx.bSupportPulseGuide,
-        cameraPropertyEx.bSupportControlTemp);
-
-    // Set CCD Capability
-    uint32_t cap = GetCCDCapability();
-    if (cameraProperty.IsColorCam) {
-        cap |= CCD_HAS_BAYER;
-    }
-    else {
-        cap &= ~CCD_HAS_BAYER;
-    }
-    if (cameraPropertyEx.bSupportPulseGuide) {
-        cap |= CCD_HAS_ST4_PORT;
-    }
-    else {
-        cap &= ~CCD_HAS_ST4_PORT;
-    }
-    if (cameraPropertyEx.bSupportControlTemp) {
-        cap |= CCD_HAS_COOLER;
-    }
-    else {
-        cap &= ~CCD_HAS_COOLER;
-    }
-    SetCCDCapability(cap);
 
     // get camera pixel size
     status = SVBGetSensorPixelSize(cameraID, &pixelSize);
@@ -306,7 +297,7 @@ bool SVBONYCCD::Connect()
 
     // fix for SDK gain error issue
     // set exposure time
-    SVBSetControlValue(cameraID, SVB_EXPOSURE, (long)(1 * 1000000L), SVB_FALSE);
+    SVBSetControlValue(cameraID, SVB_EXPOSURE, (double)(1 * 1000000), SVB_FALSE);
 
     // read controls and feed UI
     for(int i = 0; i < controlsNum; i++)
@@ -466,81 +457,30 @@ bool SVBONYCCD::Connect()
     }
 
     // set frame format and feed UI
-    nFrameFormat = 0;
-    // initialize frameFormatDefinitions from cameraProperty
-    defaultMaxBitDepth = 0; // max pixel bit depth
-    for (int i = 0; (i < (int)(sizeof(cameraProperty.SupportedVideoFormat)/sizeof(cameraProperty.SupportedVideoFormat[0]))) && cameraProperty.SupportedVideoFormat[i] != SVB_IMG_END; i++)
+    IUFillSwitch(&FormatS[FORMAT_RAW8], "FORMAT_RAW8", "Raw 8 bits", ISS_OFF);
+    IUFillSwitch(&FormatS[FORMAT_RAW16], "FORMAT_RAW16", "Raw 16 bits", ISS_ON);
+    IUFillSwitchVector(&FormatSP, FormatS, 2, getDeviceName(), "FRAME_FORMAT", "Frame Format", MAIN_CONTROL_TAB, IP_RW,
+                       ISR_1OFMANY, 60, IPS_IDLE);
+    // NOTE : SV305M PRO only supports Y8 and Y16 frame format
+    if(strcmp(cameraInfo.FriendlyName, "SVBONY SV305M PRO") == 0)
     {
-        int svb_img_fmt = cameraProperty.SupportedVideoFormat[i];
-
-        if (svb_img_fmt != SVB_IMG_RGB24 && svb_img_fmt != SVB_IMG_RGB32) // INDI not support RGB24,RGB32 
-        {
-            frameFormatDefinitions[svb_img_fmt].isIndex = i; // Set the index of the ISwitch
-
-            if (HasBayer() == frameFormatDefinitions[svb_img_fmt].isColor) // either HasBayer and color frame format or not HasBayer and grayscale format.
-            {
-                // For color CCDs, find the maximum color format bits
-                // For monochrome CCDs, find the maximum bits in grayscale format.
-                if (defaultMaxBitDepth < frameFormatDefinitions[svb_img_fmt].isBits)
-                    defaultMaxBitDepth = frameFormatDefinitions[svb_img_fmt].isBits;
-            }
-            ++nFrameFormat; // count up number of ISwitch
-        }
+        status = SVBSetOutputImageType(cameraID, frameFormatMapping[FORMAT_Y16]);
     }
-
-    // initialize ISwitchs
-    if (!(switch2frameFormatDefinitionsIndex = (SVB_IMG_TYPE*)calloc(nFrameFormat, sizeof(int))))
-    {
-        LOG_ERROR("Error, memory allocation for image format switches index\n");
-        pthread_mutex_unlock(&cameraID_mutex);
-        return false;
-    }
-    defaultFrameFormatIndex = SVB_IMG_END;
-    for (int i = 0; i < (int)(sizeof(frameFormatDefinitions)/sizeof(FrameFormatDefinition)); i++)
-    {
-        FrameFormatDefinition *pFrameFormatDef = &frameFormatDefinitions[i];
-        if (pFrameFormatDef->isIndex != -1)
-        {
-            if (HasBayer() == pFrameFormatDef->isColor && defaultMaxBitDepth == pFrameFormatDef->isBits)
-            {
-                // Switch on the maximum number of bits. For color cameras, the number of bits for color; for monochrome cameras, the number of bits for grayscale.
-                pFrameFormatDef->isStateDefault = ISS_ON;
-                defaultFrameFormatIndex = (SVB_IMG_TYPE)i;
-            }
-            switch2frameFormatDefinitionsIndex[pFrameFormatDef->isIndex] = (SVB_IMG_TYPE)i;
-            // Setup Capture Format
-            CaptureFormat format = {
-                pFrameFormatDef->isName,
-                pFrameFormatDef->isLabel,
-                (uint8_t)(pFrameFormatDef->isBits),
-                pFrameFormatDef->isStateDefault == ISS_ON ? true: false
-            };
-            addCaptureFormat(format);
-        }
-    }
-    // Set ISS_ON for default switch cause addCapture cannot set ISS_ON when config.xml 'CCD_CAPTURE_FORMAT' is old format.
-    if (CaptureFormatSP.findOnSwitchIndex() == -1)
-    {
-        FrameFormatDefinition *pFrameFormatDef = &frameFormatDefinitions[defaultFrameFormatIndex];
-        CaptureFormatSP[pFrameFormatDef->isIndex].setState(ISS_ON);
-        CaptureFormatSP.apply();
-    }
-
-    if(HasBayer())
+    else
     {
         IUSaveText(&BayerT[0], "0");
         IUSaveText(&BayerT[1], "0");
         IUSaveText(&BayerT[2], bayerPatternMapping[cameraProperty.BayerPattern]);
+        status = SVBSetOutputImageType(cameraID, frameFormatMapping[FORMAT_RAW16]);
     }
-    status = SVBSetOutputImageType(cameraID, defaultFrameFormatIndex);
     if(status != SVB_SUCCESS)
     {
         LOG_ERROR("Error, camera set frame format failed\n");
         pthread_mutex_unlock(&cameraID_mutex);
         return false;
     }
-    bitDepth = defaultMaxBitDepth;
-    frameFormat = defaultFrameFormatIndex;
+    bitDepth = 16;
+    frameFormat = FORMAT_RAW16;
     LOG_INFO("Camera set frame format mode\n");
 
     // set bit stretching and feed UI
@@ -554,51 +494,29 @@ bool SVBONYCCD::Connect()
     bitStretch = 0;
 
     // Cooler Enable
-    if (HasCooler()) {
+    if (GetCCDCapability() & CCD_HAS_COOLER) {
         // set initial target temperature
-        IUFillNumber(&TemperatureN[0], "CCD_TEMPERATURE_VALUE", "Temperature (C)", "%5.2f", -50.0, 50.0, 0., 25.);
-
-	// default target temperature is 0. Setting to 25.
-        if (SVB_SUCCESS != (status = SVBSetControlValue(cameraID, SVB_TARGET_TEMPERATURE, (long)(25*10), SVB_FALSE))) {
-            LOGF_INFO("Setting default target temperature failed. (SVB_TARGET_TEMPERATURE:%d)", status);
-        }
-	TemperatureRequest = 25;
+        IUFillNumber(&TemperatureN[0], "CCD_TEMPERATURE_VALUE", "Temperature (C)", "%5.2f", -50.0, 50.0, 0., 0.);
 
         // set cooler status to disable
         IUFillSwitch(&CoolerS[COOLER_ENABLE], "COOLER_ON", "ON", ISS_OFF);
         IUFillSwitch(&CoolerS[COOLER_DISABLE], "COOLER_OFF", "OFF", ISS_ON);
         IUFillSwitchVector(&CoolerSP, CoolerS, 2, getDeviceName(), "CCD_COOLER", "Cooler", MAIN_CONTROL_TAB, IP_WO, ISR_1OFMANY, 60, IPS_IDLE);
-
-	// cooler power info
-	IUFillNumber(&CoolerN[0], "CCD_COOLER_POWER_VALUE", "Cooler power (%)", "%3.f", 0.0, 100.0, 1., 0.);
-	IUFillNumberVector(&CoolerNP, CoolerN, 1, getDeviceName(), "CCD_COOLER_POWER", "Cooler power", MAIN_CONTROL_TAB, IP_RO, 60, IPS_IDLE);
-
     }
     coolerEnable = COOLER_DISABLE;
 
     // set camera ROI and BIN
     binning = false;
+    SetCCDParams(cameraProperty.MaxWidth, cameraProperty.MaxHeight, bitDepth, pixelSize, pixelSize);
     status = SVBSetROIFormat(cameraID, 0, 0, cameraProperty.MaxWidth, cameraProperty.MaxHeight, 1);
     if(status != SVB_SUCCESS)
     {
-        LOG_ERROR("Error, camera set ROI failed");
+        LOG_ERROR("Error, camera set ROI failed\n");
         pthread_mutex_unlock(&cameraID_mutex);
         return false;
     }
-    int x, y, w, h, bin;
-	status = SVBGetROIFormat(cameraID, &x, &y, &w, &h, &bin); // Get Actual ROI
-    if(status != SVB_SUCCESS)
-    {
-        LOG_ERROR("Error, camera get ROI failed");
-        pthread_mutex_unlock(&cameraID_mutex);
-        return false;
-    }
-    LOGF_DEBUG("Actual ROI x=%d, y=%d, w=%d, h=%d, bin=%d", x, y, w, h, bin);
-    SetCCDParams(w, h, bitDepth, pixelSize, pixelSize);
-    x_offset = x;
-    y_offset = y;
-    ROI_width = w;
-    ROI_height = h;
+    x_offset = 0;
+    y_offset = 0;
     LOG_INFO("Camera set ROI\n");
 
     // set camera soft trigger mode
@@ -636,7 +554,7 @@ bool SVBONYCCD::Connect()
 
 
 //
-bool SVBONYCCD::Disconnect()
+bool Sv305CCD::Disconnect()
 {
     // destroy streaming
     pthread_mutex_lock(&condMutex);
@@ -652,7 +570,7 @@ bool SVBONYCCD::Disconnect()
     if(status != SVB_SUCCESS)
     {
         LOG_ERROR("Error, stop camera failed\n");
-        //pthread_mutex_unlock(&cameraID_mutex); // *1 has been comment outed, so this line comment outed too
+        // pthread_mutex_unlock(&cameraID_mutex); // *1 has been comment outed, so this line comment outed too
         return false;
     }
 
@@ -660,25 +578,14 @@ bool SVBONYCCD::Disconnect()
     status = SVBCloseCamera(cameraID);
     LOG_INFO("CCD is offline.\n");
 
-    // free map for frame format Switch to frame format definition array
-    free(switch2frameFormatDefinitionsIndex);
-
-    //pthread_mutex_unlock(&cameraID_mutex); // *1 has been comment outed, so this line comment outed too
-
-    // destroy mutex, cond and streaming thread
-    pthread_mutex_destroy(&cameraID_mutex);
-    pthread_mutex_destroy(&streaming_mutex);
-    pthread_mutex_destroy(&condMutex);
-    pthread_cond_destroy(&cv);
-
-    pthread_cancel(primary_thread);
+    // pthread_mutex_unlock(&cameraID_mutex); // *1 has been comment outed, so this line comment outed too
 
     return true;
 }
 
 
 // set CCD parameters
-bool SVBONYCCD::updateCCDParams()
+bool Sv305CCD::updateCCDParams()
 {
     // set CCD parameters
     PrimaryCCD.setBPP(bitDepth);
@@ -695,45 +602,53 @@ bool SVBONYCCD::updateCCDParams()
 ///////////////////////////////////////////////////////////////////////////////////////
 /// Set camera temperature
 ///////////////////////////////////////////////////////////////////////////////////////
-int SVBONYCCD::SetTemperature(double temperature)
+int Sv305CCD::SetTemperature(double temperature)
 {
+    pthread_mutex_lock(&cameraID_mutex);
+
     /**********************************************************
      *  We return 0 if setting the temperature will take some time
      *  If the requested is the same as current temperature, or very
      *  close, we return 1 and INDI::CCD will mark the temperature status as OK
      *  If we return 0, INDI::CCD will mark the temperature status as BUSY
      **********************************************************/
-    SVB_ERROR_CODE ret;
+    try {
+        SVB_ERROR_CODE ret;
+        long lValue;
+        SVB_BOOL bAuto;
+        if (SVB_SUCCESS != (ret = SVBGetControlValue(cameraID, SVB_CURRENT_TEMPERATURE, &lValue, &bAuto))) {
+            LOGF_INFO("Error, unable to get temp due to ...", ret);
+            throw -1;
+        }
+        TemperatureN[0].value = ((double)lValue)/10;
 
-    // If below threshold, do nothing
-    if (fabs(temperature - TemperatureN[0].value) < TemperatureRampNP[RAMP_THRESHOLD].value) {
-        return 1; // The requested temperature is the same as current temperature, or very close
+        // Enable Cooler
+        if (SVB_SUCCESS != (ret = SVBSetControlValue(cameraID, SVB_COOLER_ENABLE, 1, SVB_FALSE))) {
+            LOGF_INFO("Enabling cooler is fail.(SVB_COOLER_ENABLE:%d)", ret);
+            throw -1;
+        }
+
+        CoolerS[COOLER_ENABLE].s = ISS_ON;
+        CoolerS[COOLER_DISABLE].s = ISS_OFF;
+        CoolerSP.s   = IPS_OK;
+        IDSetSwitch(&CoolerSP, NULL);
+
+        // If there difference, for example, is less than 0.1 degrees, let's immediately return OK.
+        if (fabs(temperature - TemperatureN[0].value) < TEMP_THRESHOLD) {
+            throw 1; // The requested temperature is the same as current temperature, or very close
+        }
+        // Set target temperature
+        if (SVB_SUCCESS != (ret = SVBSetControlValue(cameraID, SVB_TARGET_TEMPERATURE, (long)(temperature*10), SVB_FALSE))) {
+            LOGF_INFO("Setting target temperature is fail.(SVB_TARGET_TEMPERATURE:%d)", ret);
+            throw -1;
+        }
     }
-
-    pthread_mutex_lock(&cameraID_mutex);
-    // Set target temperature
-    if (SVB_SUCCESS != (ret = SVBSetControlValue(cameraID, SVB_TARGET_TEMPERATURE, (long)(temperature*10), SVB_FALSE))) {
-        LOGF_INFO("Setting target temperature failed. (SVB_TARGET_TEMPERATURE:%d)", ret);
-	pthread_mutex_unlock(&cameraID_mutex);
-	return -1;
+    catch (int result) {
+        pthread_mutex_unlock(&cameraID_mutex);
+        return result; // 1:no need to set target tenperature, -1:API ERROR
     }
 
     pthread_mutex_unlock(&cameraID_mutex);
-
-    // Enable Cooler
-    pthread_mutex_lock(&cameraID_mutex);
-    if (SVB_SUCCESS != (ret = SVBSetControlValue(cameraID, SVB_COOLER_ENABLE, 1, SVB_FALSE))) {
-        LOGF_INFO("Enabling cooler is fail.(SVB_COOLER_ENABLE:%d)", ret);
-	pthread_mutex_unlock(&cameraID_mutex);
-        return -1;
-    }
-
-    pthread_mutex_unlock(&cameraID_mutex);
-
-    CoolerS[COOLER_ENABLE].s = ISS_ON;
-    CoolerS[COOLER_DISABLE].s = ISS_OFF;
-    CoolerSP.s   = IPS_OK;
-    IDSetSwitch(&CoolerSP, NULL);
 
     // Otherwise, we set the temperature request and we update the status in TimerHit() function.
     TemperatureRequest = temperature;
@@ -743,7 +658,7 @@ int SVBONYCCD::SetTemperature(double temperature)
 }
 
 //
-bool SVBONYCCD::StartExposure(float duration)
+bool Sv305CCD::StartExposure(float duration)
 {
     // checks for time limits
     if (duration < minExposure)
@@ -762,11 +677,8 @@ bool SVBONYCCD::StartExposure(float duration)
 
     pthread_mutex_lock(&cameraID_mutex);
 
-    // Discard unretrieved exposure data
-    discardVideoData();
-
     // set exposure time (s -> us)
-    status = SVBSetControlValue(cameraID, SVB_EXPOSURE, (long)(duration * 1000000L), SVB_FALSE);
+    status = SVBSetControlValue(cameraID, SVB_EXPOSURE, (double)(duration * 1000000), SVB_FALSE);
     if(status != SVB_SUCCESS)
     {
         LOG_ERROR("Error, camera set exposure failed\n");
@@ -796,16 +708,9 @@ bool SVBONYCCD::StartExposure(float duration)
     return true;
 }
 
-// Discard unretrieved exposure data
-void SVBONYCCD::discardVideoData()
-{
-    unsigned char* imageBuffer = PrimaryCCD.getFrameBuffer();
-    SVB_ERROR_CODE status = SVBGetVideoData(cameraID, imageBuffer, PrimaryCCD.getFrameBufferSize(),  1000);
-    LOGF_DEBUG("Discard unretrieved exposure data: SVBGetVideoData:result=%d", status);
-}
 
 //
-bool SVBONYCCD::AbortExposure()
+bool Sv305CCD::AbortExposure()
 {
 
     LOG_INFO("Abort exposure\n");
@@ -845,14 +750,14 @@ bool SVBONYCCD::AbortExposure()
 
 
 //
-bool SVBONYCCD::StartStreaming()
+bool Sv305CCD::StartStreaming()
 {
     LOG_INFO("framing\n");
 
     // stream init
-    // Check monochrome camera or binning
+    // NOTE : SV305M is MONO
     // if binning, no more bayer
-    if(!HasBayer() || binning)
+    if(strcmp(cameraInfo.FriendlyName, "SVBONY SV305M PRO") == 0 || binning)
     {
         Streamer->setPixelFormat(INDI_MONO, bitDepth);
     }
@@ -877,7 +782,7 @@ bool SVBONYCCD::StartStreaming()
     }
 
     // set exposure time (s -> us)
-    status = SVBSetControlValue(cameraID, SVB_EXPOSURE, (long)(ExposureRequest * 1000000L), SVB_FALSE);
+    status = SVBSetControlValue(cameraID, SVB_EXPOSURE, (double)(ExposureRequest * 1000000), SVB_FALSE);
     if(status != SVB_SUCCESS)
     {
         LOG_ERROR("Error, camera set exposure failed\n");
@@ -918,8 +823,9 @@ bool SVBONYCCD::StartStreaming()
 
     pthread_mutex_lock(&condMutex);
     streaming = true;
-    pthread_cond_signal(&cv);
     pthread_mutex_unlock(&condMutex);
+
+    pthread_cond_signal(&cv);
 
     LOG_INFO("Streaming started\n");
 
@@ -928,7 +834,7 @@ bool SVBONYCCD::StartStreaming()
 
 
 //
-bool SVBONYCCD::StopStreaming()
+bool Sv305CCD::StopStreaming()
 {
     LOG_INFO("stop framing\n");
 
@@ -976,8 +882,9 @@ bool SVBONYCCD::StopStreaming()
 
     pthread_mutex_lock(&condMutex);
     streaming = false;
-    pthread_cond_signal(&cv);
     pthread_mutex_unlock(&condMutex);
+
+    pthread_cond_signal(&cv);
 
     LOG_INFO("Streaming stopped\n");
 
@@ -986,14 +893,14 @@ bool SVBONYCCD::StopStreaming()
 
 
 //
-void* SVBONYCCD::streamVideoHelper(void * context)
+void* Sv305CCD::streamVideoHelper(void * context)
 {
-    return static_cast<SVBONYCCD *>(context)->streamVideo();
+    return static_cast<Sv305CCD *>(context)->streamVideo();
 }
 
 
 //
-void* SVBONYCCD::streamVideo()
+void* Sv305CCD::streamVideo()
 {
     auto start = std::chrono::high_resolution_clock::now();
     auto finish = std::chrono::high_resolution_clock::now();
@@ -1009,17 +916,17 @@ void* SVBONYCCD::streamVideo()
             ExposureRequest = 1.0 / Streamer->getTargetFPS();
         }
 
-        pthread_mutex_unlock(&condMutex);
-
         if (terminateThread)
             break;
+
+        pthread_mutex_unlock(&condMutex);
 
         unsigned char* imageBuffer = PrimaryCCD.getFrameBuffer();
 
         pthread_mutex_lock(&cameraID_mutex);
 
         // get the frame
-        status = SVBGetVideoData(cameraID, imageBuffer, PrimaryCCD.getFrameBufferSize(), 1000 );
+        status = SVBGetVideoData(cameraID, imageBuffer, PrimaryCCD.getFrameBufferSize(), 100000 );
 
         pthread_mutex_unlock(&cameraID_mutex);
 
@@ -1055,7 +962,7 @@ void* SVBONYCCD::streamVideo()
 
 
 // subframing
-bool SVBONYCCD::UpdateCCDFrame(int x, int y, int w, int h)
+bool Sv305CCD::UpdateCCDFrame(int x, int y, int w, int h)
 {
 
     if((x + w) > cameraProperty.MaxWidth
@@ -1087,17 +994,7 @@ bool SVBONYCCD::UpdateCCDFrame(int x, int y, int w, int h)
         pthread_mutex_unlock(&cameraID_mutex);
         return false;
     }
-    LOGF_DEBUG("Given ROI x=%d, y=%d, w=%d, h=%d", x, y, w, h);
-    int bin;
-	status = SVBGetROIFormat(cameraID, &x, &y, &w, &h, &bin);
-    if(status != SVB_SUCCESS)
-    {
-        LOG_ERROR("Error, get actual subframe failed");
-        pthread_mutex_unlock(&cameraID_mutex);
-        return false;
-    }
-    LOGF_DEBUG("Actual ROI x=%d, y=%d, w=%d, h=%d, bin=%d", x, y, w, h, bin);
-    LOG_INFO("Subframe set");
+    LOG_INFO("Subframe set\n");
 
     // start framing
     status = SVBStartVideoCapture(cameraID);
@@ -1112,15 +1009,13 @@ bool SVBONYCCD::UpdateCCDFrame(int x, int y, int w, int h)
 
     x_offset = x;
     y_offset = y;
-    ROI_width = w;
-    ROI_height = h;
 
     return INDI::CCD::UpdateCCDFrame(x, y, w, h);
 }
 
 
 // binning
-bool SVBONYCCD::UpdateCCDBin(int hor, int ver)
+bool Sv305CCD::UpdateCCDBin(int hor, int ver)
 {
     if(hor == 1 && ver == 1)
         binning = false;
@@ -1136,7 +1031,7 @@ bool SVBONYCCD::UpdateCCDBin(int hor, int ver)
 
 
 //
-float SVBONYCCD::CalcTimeLeft()
+float Sv305CCD::CalcTimeLeft()
 {
     double timesince;
     double timeleft;
@@ -1153,10 +1048,10 @@ float SVBONYCCD::CalcTimeLeft()
 
 
 // grab loop
-void SVBONYCCD::TimerHit()
+void Sv305CCD::TimerHit()
 {
     int timerID = -1;
-    double timeleft;
+    long timeleft;
 
     if (isConnected() == false)
         return; //  No need to reset timer if we are not connected anymore
@@ -1178,56 +1073,45 @@ void SVBONYCCD::TimerHit()
                 if (timeleft > 0.07)
                 {
                     //  use an even tighter timer
-                    timerID = SetTimer((uint32_t)(timeleft*1000));
+                    timerID = SetTimer(50);
                 }
                 else
                 {
-                    LOGF_DEBUG("Current timeleft:%.2lf sec.", timeleft);
-
                     pthread_mutex_lock(&cameraID_mutex);
+
                     unsigned char* imageBuffer = PrimaryCCD.getFrameBuffer();
-                    status = SVBGetVideoData(cameraID, imageBuffer, PrimaryCCD.getFrameBufferSize(),  1000);
-                    pthread_mutex_unlock(&cameraID_mutex);
-               	    LOGF_DEBUG("SVBGetVideoData:result=%d", status);
-
-                    switch (status) {
-                    case SVB_SUCCESS:
-                        // exposing done
-                        PrimaryCCD.setExposureLeft(0);
-                        InExposure = false;
-
-                        // stretching 12bits depth to 16bits depth
-                        if(bitDepth == 16 && (bitStretch != 0))
-                        {
-                            u_int16_t* tmp = (u_int16_t*)imageBuffer;
-                            for(int i = 0; i < PrimaryCCD.getFrameBufferSize() / 2; i++)
-                            {
-                                tmp[i] <<= bitStretch;
-                            }
-                        }
-
-                        // binning if needed
-                        if(binning)
-                            PrimaryCCD.binFrame();
-
-                        // exposure done
-                        ExposureComplete(&PrimaryCCD);
-                        break;
-
-                    case SVB_ERROR_TIMEOUT:
-                        LOG_DEBUG("Timeout for image data retrieval.");
-                        // set retry timer for SVGGetVideoData
-                        timerID = SetTimer((uint32_t)100); // Time until next image data acquisition: 100 ms
-                        break;
-
-                    default:
-                        LOGF_INFO("Error retrieval image data (status:%d)", status);
-                        // Exposure be aborted. Error in SVBGetVideoData
-                        PrimaryCCD.setExposureFailed(); // The exposure will be restarted after calling PrimaryCCD.setExposureFailed().
-                        PrimaryCCD.setExposureLeft(0);
-                        InExposure = false;
-                        break;
+                    status = SVBGetVideoData(cameraID, imageBuffer, PrimaryCCD.getFrameBufferSize(), 100 );
+                    while(status != SVB_SUCCESS)
+                    {
+                        pthread_mutex_unlock(&cameraID_mutex);
+                        usleep(100000);
+                        pthread_mutex_lock(&cameraID_mutex);
+                        status = SVBGetVideoData(cameraID, imageBuffer, PrimaryCCD.getFrameBufferSize(), 100 );
+                        LOG_DEBUG("Wait...");
                     }
+
+                    pthread_mutex_unlock(&cameraID_mutex);
+
+                    // exposing done
+                    PrimaryCCD.setExposureLeft(0);
+                    InExposure = false;
+
+                    // stretching 12bits depth to 16bits depth
+                    if(bitDepth == 16 && (bitStretch != 0))
+                    {
+                        u_int16_t* tmp = (u_int16_t*)imageBuffer;
+                        for(int i = 0; i < PrimaryCCD.getFrameBufferSize() / 2; i++)
+                        {
+                            tmp[i] <<= bitStretch;
+                        }
+                    }
+
+                    // binning if needed
+                    if(binning)
+                        PrimaryCCD.binFrame();
+
+                    // exposure done
+                    ExposureComplete(&PrimaryCCD);
                 }
             }
         }
@@ -1235,7 +1119,7 @@ void SVBONYCCD::TimerHit()
         {
             if (isDebug())
             {
-                IDLog("With time left %.2lf\n", timeleft);
+                IDLog("With time left %ld\n", timeleft);
                 IDLog("image not yet ready....\n");
             }
 
@@ -1244,34 +1128,45 @@ void SVBONYCCD::TimerHit()
     }
 
 
-    if (HasCooler()) {
-	SVB_ERROR_CODE ret;
+    if (GetCCDCapability() & CCD_HAS_COOLER) {
+        // Are we performing temperature readout or regulation?
+        SVB_ERROR_CODE ret;
         long lValue;
         SVB_BOOL bAuto;
 
-        // temperature readout
-	pthread_mutex_lock(&cameraID_mutex);
-        if (SVB_SUCCESS != (ret = SVBGetControlValue(cameraID, SVB_CURRENT_TEMPERATURE, &lValue, &bAuto))) {
-       	    LOGF_INFO("Error, unable to get temp due to ...(SVB_CURRENT_TEMPERATURE:%d)", ret);
-            TemperatureNP.s = IPS_ALERT;
-        } else {
-            TemperatureN[0].value = ((double)lValue)/10;
-            IDSetNumber(&TemperatureNP, nullptr);
-        }
-        pthread_mutex_unlock(&cameraID_mutex);
+        switch (TemperatureNP.s)
+        {
+            case IPS_IDLE:
+            case IPS_OK:
+                pthread_mutex_lock(&cameraID_mutex);
+                if (SVB_SUCCESS != (ret = SVBGetControlValue(cameraID, SVB_CURRENT_TEMPERATURE, &lValue, &bAuto))) {
+                    LOGF_INFO("Error, unable to get temp due to ...(SVB_CURRENT_TEMPERATURE:%d)", ret);
+                }
+                else {
+                    TemperatureN[0].value = ((double)lValue)/10;
+                    IDSetNumber(&TemperatureNP, nullptr);
+                }
+                pthread_mutex_unlock(&cameraID_mutex);
+                break;
 
-	// read cooler power
-	pthread_mutex_lock(&cameraID_mutex);
-        if (SVB_SUCCESS != (ret = SVBGetControlValue(cameraID, SVB_COOLER_POWER, &lValue, &bAuto))) {
-            LOGF_INFO("Error, unable to get cooler power due to ...(SVB_COOLER_POWER:%d)", ret);
-            CoolerNP.s = IPS_ALERT;
+            case IPS_BUSY:
+                pthread_mutex_lock(&cameraID_mutex);
+                if (SVB_SUCCESS != (ret = SVBGetControlValue(cameraID, SVB_CURRENT_TEMPERATURE, &lValue, &bAuto))) {
+                    LOGF_INFO("Error, unable to get temp due to ...(SVB_CURRENT_TEMPERATURE:%d)", ret);
+                }
+                else {
+                    TemperatureN[0].value = ((double)lValue)/10;
+                    if (fabs(TemperatureRequest - TemperatureN[0].value) <= TEMP_THRESHOLD) {
+                        TemperatureNP.s = IPS_OK;
+                    }
+                    IDSetNumber(&TemperatureNP, nullptr);
+                }
+                pthread_mutex_unlock(&cameraID_mutex);
+                break;
+
+            case IPS_ALERT:
+                break;
         }
-        else {
-            CoolerN[0].value = (double)lValue;
-            CoolerNP.s = IPS_OK;
-            IDSetNumber(&CoolerNP, nullptr);
-        }
-        pthread_mutex_unlock(&cameraID_mutex);
     }
 
     if (timerID == -1)
@@ -1281,7 +1176,7 @@ void SVBONYCCD::TimerHit()
 
 
 // helper : update camera control depending on control type
-bool SVBONYCCD::updateControl(int ControlType, SVB_CONTROL_TYPE SVB_Control, double values[], char *names[], int n)
+bool Sv305CCD::updateControl(int ControlType, SVB_CONTROL_TYPE SVB_Control, double values[], char *names[], int n)
 {
     IUUpdateNumber(&ControlsNP[ControlType], values, names, n);
 
@@ -1306,7 +1201,7 @@ bool SVBONYCCD::updateControl(int ControlType, SVB_CONTROL_TYPE SVB_Control, dou
 
 
 //
-bool SVBONYCCD::ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n)
+bool Sv305CCD::ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n)
 {
     if (strcmp (dev, getDeviceName()))
         return false;
@@ -1365,49 +1260,84 @@ bool SVBONYCCD::ISNewNumber(const char *dev, const char *name, double values[], 
         return updateControl(CCD_DOFFSET_N, SVB_BLACK_LEVEL, values, names, n);
     }
 
-    bool result = INDI::CCD::ISNewNumber(dev, name, values, names, n);
-
-    // look for ROI settings
-    if (!strcmp(name, "CCD_FRAME") && result)
-    {
-        // Set actural ROI size
-        PrimaryCCD.setFrame(x_offset, y_offset, ROI_width, ROI_height);
-    }
-
-    return result;
+    return INDI::CCD::ISNewNumber(dev, name, values, names, n);
 }
 
 
 //
-bool SVBONYCCD::ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n)
+bool Sv305CCD::ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n)
 {
     // Make sure the call is for our device
     if(!strcmp(dev, getDeviceName()))
     {
-        // Check is the call for capture format
-        if (CaptureFormatSP.isNameMatch(name))
+        // Check if the call for BPP switch
+        if (!strcmp(name, FormatSP.name))
         {
-            // search capture format in frameFormatDefinitions
-            int tempFormatIndex = -1; // index of matched frameFormatDefinitions.
-            for (int i = 0; i < (int)nFrameFormat; i++)
+            // Find out which state is requested by the client
+            const char *actionName = IUFindOnSwitchName(states, names, n);
+            // If same state as actionName, then we do nothing
+            int tmpFormat = IUFindOnSwitchIndex(&FormatSP);
+            if (!strcmp(actionName, FormatS[tmpFormat].name))
             {
-                int currentIndex = (int)switch2frameFormatDefinitionsIndex[i];
+                LOGF_INFO("Frame format is already %s", FormatS[tmpFormat].label);
+                FormatSP.s = IPS_IDLE;
+                IDSetSwitch(&FormatSP, NULL);
+                return true;
+            }
 
-                // check to match this frameFormatDefinitions.
-                for (int j = 0; j < n; j++)
-                {
-                    if (!strcmp(names[j], frameFormatDefinitions[currentIndex].isName))
-                    {
-                        tempFormatIndex = currentIndex; // found it.
-                        break;
-                    }
-                }
-            }
-            if (tempFormatIndex == -1) // If it is not found, abort the process.
+            // Otherwise, let us update the switch state
+            IUUpdateSwitch(&FormatSP, states, names, n);
+            tmpFormat = IUFindOnSwitchIndex(&FormatSP);
+            if (tmpFormat == -1)
             {
-                LOGF_ERROR("Error, %s is not exist in Format switches.", names[0]);
-                return false;
+                tmpFormat = FORMAT_RAW16; // Set Frame Format as FORMAT_RAW16 if frameFromat is -1
             }
+            pthread_mutex_lock(&cameraID_mutex);
+
+            // adjust frame format for SV305M
+            if(strcmp(cameraInfo.FriendlyName, "SVBONY SV305M PRO") == 0)
+            {
+                // offset format mapper to Y16 and Y8 modes
+                tmpFormat += FORMAT_Y16;
+            }
+
+            // set new format
+            status = SVBSetOutputImageType(cameraID, frameFormatMapping[tmpFormat]);
+            if(status != SVB_SUCCESS)
+            {
+                LOG_ERROR("Error, camera set frame format failed\n");
+            }
+            // set frame format back for SV305M
+            if(strcmp(cameraInfo.FriendlyName, "SVBONY SV305M PRO") == 0)
+            {
+                tmpFormat -= FORMAT_Y16;
+            }
+            LOGF_INFO("Frame format is now %s", FormatS[tmpFormat].label);
+
+            pthread_mutex_unlock(&cameraID_mutex);
+
+            frameFormat = tmpFormat;
+
+            // pixel depth
+            switch(frameFormat)
+            {
+                case FORMAT_RAW8 :
+                    bitDepth = 8;
+                    break;
+                case FORMAT_RAW16 :
+                    bitDepth = 16;
+                    break;
+                default :
+                    frameFormat = FORMAT_RAW16; // Set frameFormat as FORMAT_RAW16 if frameFromat is unknown
+                    bitDepth = 16;
+                    break;
+            }
+            // update CCD parameters
+            updateCCDParams();
+
+            FormatSP.s = IPS_OK;
+            IDSetSwitch(&FormatSP, NULL);
+            return true;
         }
 
         // Check if the call for frame rate switch
@@ -1483,7 +1413,7 @@ bool SVBONYCCD::ISNewSwitch(const char *dev, const char *name, ISState *states, 
             const char *actionName = IUFindOnSwitchName(states, names, n);
             // If same state as actionName, then we do nothing
             int tmpCoolerEnable = IUFindOnSwitchIndex(&CoolerSP);
-            if (!strcmp(actionName, CoolerS[tmpCoolerEnable].name))
+            if (!strcmp(actionName, StretchS[tmpCoolerEnable].name))
             {
                 LOGF_INFO("Cooler Enable is already %s", CoolerS[tmpCoolerEnable].label);
                 CoolerSP.s = IPS_IDLE;
@@ -1504,64 +1434,20 @@ bool SVBONYCCD::ISNewSwitch(const char *dev, const char *name, ISState *states, 
             if (SVB_SUCCESS != (ret = SVBSetControlValue(cameraID, SVB_COOLER_ENABLE, (coolerEnable == COOLER_ENABLE ? 1 : 0), SVB_FALSE))) {
                 LOGF_INFO("Enabling cooler is fail.(SVB_COOLER_ENABLE:%d)", ret);
             }
-
             CoolerSP.s = IPS_OK;
             IDSetSwitch(&CoolerSP, NULL);
             return true;
         }
+
     }
 
     // If we did not process the switch, let us pass it to the parent class to process it
     return INDI::CCD::ISNewSwitch(dev, name, states, names, n);
 }
 
-bool SVBONYCCD::SetCaptureFormat(uint8_t index)
-{
-    if (index >= nFrameFormat) // if there is no ON switch, set index of default format.
-    {
-        LOG_ERROR("Error, No capture format selected.");
-        return false;
-    }
-    SVB_IMG_TYPE newFrameFormat = switch2frameFormatDefinitionsIndex[index];
-
-    pthread_mutex_lock(&cameraID_mutex);
-    status = SVBSetOutputImageType(cameraID, newFrameFormat);
-    pthread_mutex_unlock(&cameraID_mutex);
-
-    if(status != SVB_SUCCESS)
-    {
-        LOG_ERROR("Error, camera set frame format failed");
-        return false;
-    }
-    LOGF_INFO("Capture format is now %s", CaptureFormatSP[index].label);
-
-    frameFormat = newFrameFormat;
-
-    // pixel depth
-    bitDepth = frameFormatDefinitions[newFrameFormat].isBits;
-    PrimaryCCD.setBPP(bitDepth);
-
-    // Change color/grascale mode of CCD
-    if (HasBayer() != frameFormatDefinitions[newFrameFormat].isColor) {
-        // Set CCD Capability
-        uint32_t cap = GetCCDCapability();
-        if (HasBayer()) {
-            cap &= ~CCD_HAS_BAYER; // if color mode exchange to monochrome
-        }
-        else {
-            cap |= CCD_HAS_BAYER; // if monochrome mode exchange to color
-        }
-        SetCCDCapability(cap);
-    }
-    // update CCD parameters
-    updateCCDParams();
-
-    return true;
-}
-
 
 //
-bool SVBONYCCD::saveConfigItems(FILE * fp)
+bool Sv305CCD::saveConfigItems(FILE * fp)
 {
     // Save CCD Config
     INDI::CCD::saveConfigItems(fp);
@@ -1577,6 +1463,8 @@ bool SVBONYCCD::saveConfigItems(FILE * fp)
     IUSaveConfigNumber(fp, &ControlsNP[CCD_GAMMA_N]);
     IUSaveConfigNumber(fp, &ControlsNP[CCD_DOFFSET_N]);
 
+    // Frame format
+    IUSaveConfigSwitch(fp, &FormatSP);
     IUSaveConfigSwitch(fp, &SpeedSP);
 
     // bit stretching
@@ -1587,23 +1475,9 @@ bool SVBONYCCD::saveConfigItems(FILE * fp)
 
 
 //
-// to avoid build issues with old indi
-#if INDI_VERSION_MAJOR >= 1 && INDI_VERSION_MINOR >= 9 && INDI_VERSION_RELEASE >=7
-void SVBONYCCD::addFITSKeywords(INDI::CCDChip *targetChip)
-#else
-void SVBONYCCD::addFITSKeywords(fitsfile *fptr, INDI::CCDChip *targetChip)
-#endif
+void Sv305CCD::addFITSKeywords(fitsfile *fptr, INDI::CCDChip *targetChip)
 {
-#if INDI_VERSION_MAJOR >= 1 && INDI_VERSION_MINOR >= 9 && INDI_VERSION_RELEASE >=7
-    INDI::CCD::addFITSKeywords(targetChip);
-#else
     INDI::CCD::addFITSKeywords(fptr, targetChip);
-#endif
-
-// to avoid build issues with old indi
-#if INDI_VERSION_MAJOR >= 1 && INDI_VERSION_MINOR >= 9 && INDI_VERSION_RELEASE >=7
-    auto fptr = *targetChip->fitsFilePointer();
-#endif
 
     // report controls in FITS file
     int _status = 0;
@@ -1611,8 +1485,8 @@ void SVBONYCCD::addFITSKeywords(fitsfile *fptr, INDI::CCDChip *targetChip)
     fits_update_key_dbl(fptr, "Contrast", ControlsN[CCD_CONTRAST_N].value, 3, "Contrast", &_status);
     fits_update_key_dbl(fptr, "Sharpness", ControlsN[CCD_SHARPNESS_N].value, 3, "Sharpness", &_status);
 
-    // Add items for color camera
-    if(HasBayer())
+    // NOTE : SV305M PRO is mono
+    if(strcmp(cameraInfo.FriendlyName, "SVBONY SV305M PRO") != 0)
     {
         fits_update_key_dbl(fptr, "Saturation", ControlsN[CCD_SATURATION_N].value, 3, "Saturation", &_status);
         fits_update_key_dbl(fptr, "Red White Balance", ControlsN[CCD_WBR_N].value, 3, "Red White Balance", &_status);
@@ -1628,7 +1502,7 @@ void SVBONYCCD::addFITSKeywords(fitsfile *fptr, INDI::CCDChip *targetChip)
 
 
 //
-IPState SVBONYCCD::GuideNorth(uint32_t ms)
+IPState Sv305CCD::GuideNorth(uint32_t ms)
 {
     pthread_mutex_lock(&cameraID_mutex);
 
@@ -1648,7 +1522,7 @@ IPState SVBONYCCD::GuideNorth(uint32_t ms)
 
 
 //
-IPState SVBONYCCD::GuideSouth(uint32_t ms)
+IPState Sv305CCD::GuideSouth(uint32_t ms)
 {
     pthread_mutex_lock(&cameraID_mutex);
 
@@ -1668,7 +1542,7 @@ IPState SVBONYCCD::GuideSouth(uint32_t ms)
 
 
 //
-IPState SVBONYCCD::GuideEast(uint32_t ms)
+IPState Sv305CCD::GuideEast(uint32_t ms)
 {
     pthread_mutex_lock(&cameraID_mutex);
 
@@ -1687,7 +1561,7 @@ IPState SVBONYCCD::GuideEast(uint32_t ms)
 
 
 //
-IPState SVBONYCCD::GuideWest(uint32_t ms)
+IPState Sv305CCD::GuideWest(uint32_t ms)
 {
     pthread_mutex_lock(&cameraID_mutex);
 

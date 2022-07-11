@@ -1,6 +1,6 @@
 /*
- SVBONY CCD
- SVBONY CCD Camera driver
+ SV305 CCD
+ SVBONY SV305 Camera driver
  Copyright (C) 2020 Blaise-Florentin Collin (thx8411@yahoo.fr)
 
  Generic CCD skeleton Copyright (C) 2012 Jasem Mutlaq (mutlaqja@ikarustech.com)
@@ -22,27 +22,27 @@
  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-#ifndef SVBONY_CCD_H
-#define SVBONY_CCD_H
+#ifndef SV305_CCD_H
+#define SV305_CCD_H
 
 #include <indiccd.h>
 #include <iostream>
 
-#include "libsvbony/SVBCameraSDK.h"
+#include "libsv305/SVBCameraSDK.h"
 
 
 using namespace std;
 
 
 /////////////////////////////////////////////////
-// SVBONYCCD CLASS
+// SV305CCD CLASS
 //
 
-class SVBONYCCD : public INDI::CCD
+class Sv305CCD : public INDI::CCD
 {
     public:
-        SVBONYCCD(int numCamera);
-        virtual ~SVBONYCCD();
+        Sv305CCD(int numCamera);
+        virtual ~Sv305CCD();
 
         // INDI BASE
         const char *getDefaultName() override;
@@ -100,8 +100,6 @@ class SVBONYCCD : public INDI::CCD
         SVB_CAMERA_PROPERTY cameraProperty;
         // number of camera control
         int controlsNum;
-        // camera propertyEx
-        SVB_CAMERA_PROPERTY_EX cameraPropertyEx;
         // exposure limits
         double minExposure;
         double maxExposure;
@@ -123,10 +121,7 @@ class SVBONYCCD : public INDI::CCD
 
         // ROI offsets
         int x_offset;
-	int y_offset;
-        // ROI actual size
-        int ROI_width;
-        int ROI_height;
+	    int y_offset;
 
         // streaming ?
         bool streaming;
@@ -168,42 +163,16 @@ class SVBONYCCD : public INDI::CCD
         enum { COOLER_ENABLE = 0, COOLER_DISABLE = 1 };
         int coolerEnable; // 0:Enable, 1:Disable
 
-	// cooler power
-	INumber CoolerN[1];
-	INumberVectorProperty CoolerNP;
-
         // output frame format
         // the camera is able to output RGB24, but not supported by INDI
         // -> ignored
-	// NOTE : SV305M PRO doesn't support RAW8 and RAW16, only Y8 and Y16
-        size_t nFrameFormat; // number of frame format types without SVB_IMG_RGB24
-        SVB_IMG_TYPE defaultFrameFormatIndex; // Index of Default ISwitch in frameFormatDefinions array. The index is the same as SVB_IMG_TYPE.
-        int defaultMaxBitDepth; // Maximum bit depth in camera.
-        typedef struct frameFormatDefinition {
-                const char* isName; // Name of ISwitch
-                const char* isLabel; // label of ISwitch
-                int isBits; // bit depth
-                bool isColor; // true:color, false:grayscale
-                int isIndex; // index for ISwitch
-                ISState isStateDefault; // default ISState
-        } FrameFormatDefinition;
-        FrameFormatDefinition frameFormatDefinitions[SVB_IMG_RGB24] = {
-        	{ "FORMAT_RAW8", "RAW 8 bits", 8, true, -1, ISS_OFF },
-                { "FORMAT_RAW10", "RAW 10 bits", 10, true, -1, ISS_OFF },
-                { "FORMAT_RAW12", "RAW 12 bits", 12, true, -1, ISS_OFF },
-                { "FORMAT_RAW14", "RAW 14 bits", 14, true, -1, ISS_OFF },
-                { "FORMAT_RAW16", "RAW 16 bits", 16, true, -1, ISS_OFF },
-                { "FORMAT_Y8", "Y 8 bits", 8, false, -1, ISS_OFF },
-                { "FORMAT_Y10", "Y 10 bits", 10, false, -1, ISS_OFF },
-                { "FORMAT_Y12", "Y 12 bits", 12, false, -1, ISS_OFF },
-                { "FORMAT_Y14", "Y 14 bits", 14, false, -1, ISS_OFF },
-                { "FORMAT_Y16", "Y 16 bits", 16, false, -1, ISS_OFF }
-        };
-        SVB_IMG_TYPE *switch2frameFormatDefinitionsIndex;
-        SVB_IMG_TYPE frameFormat; // currenct Frame format
+	// NOTE : SV305M PRO d'ont support RAW8 and RAW16, only Y8 and Y16
+        ISwitch FormatS[2];
+        ISwitchVectorProperty FormatSP;
+        enum { FORMAT_RAW16, FORMAT_RAW8, FORMAT_Y16, FORMAT_Y8};
+        SVB_IMG_TYPE frameFormatMapping[4] = {SVB_IMG_RAW16, SVB_IMG_RAW8, SVB_IMG_Y16, SVB_IMG_Y8};
+        int frameFormat;
         const char* bayerPatternMapping[4] = {"RGGB", "BGGR", "GRBG", "GBRG"};
-        
-        virtual bool SetCaptureFormat(uint8_t index) override;
 
         // exposure timing
         int timerID;
@@ -214,30 +183,26 @@ class SVBONYCCD : public INDI::CCD
         // update CCD Params
         bool updateCCDParams();
 
-        // Discard unretrieved exposure data
-        void discardVideoData();
-
         // save settings
         virtual bool saveConfigItems(FILE *fp) override;
 
         // add FITS fields
-// to avoid build issues with old indi
-#if INDI_VERSION_MAJOR >= 1 && INDI_VERSION_MINOR >= 9 && INDI_VERSION_RELEASE >=7
-	virtual void addFITSKeywords(INDI::CCDChip *targetChip) override;
-#else
         virtual void addFITSKeywords(fitsfile *fptr, INDI::CCDChip *targetChip) override;
-#endif
 
         // INDI Callbacks
         friend void ::ISGetProperties(const char *dev);
         friend void ::ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int num);
         friend void ::ISNewText(const char *dev, const char *name, char *texts[], char *names[], int num);
         friend void ::ISNewNumber(const char *dev, const char *name, double values[], char *names[], int num);
-        friend void ::ISNewBLOB(const char *dev, const char *name, int sizes[], int blobsizes[], char *blobs[], char *formats[], char *names[], int n);
+        friend void ::ISNewBLOB(const char *dev, const char *name, int sizes[], int blobsizes[], char *blobs[], char *formats[],
+                                char *names[], int n);
+
+        // Tolerance for cooling temperature differences
+        static constexpr double TEMP_THRESHOLD {0.01};
 
         // Threading - streaming mutex
-        pthread_cond_t cv;
-        pthread_mutex_t condMutex;
+        pthread_cond_t cv         = PTHREAD_COND_INITIALIZER;
+        pthread_mutex_t condMutex = PTHREAD_MUTEX_INITIALIZER;
 };
 
-#endif // SVBONY_CCD_H
+#endif // SV305_CCD_H

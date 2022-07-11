@@ -2024,11 +2024,9 @@ bool GPhotoCCD::saveConfigItems(FILE * fp)
     return true;
 }
 
-void GPhotoCCD::addFITSKeywords(INDI::CCDChip * targetChip)
+void GPhotoCCD::addFITSKeywords(fitsfile * fptr, INDI::CCDChip * targetChip)
 {
-    auto fptr = *targetChip->fitsFilePointer();
-
-    INDI::CCD::addFITSKeywords(targetChip);
+    INDI::CCD::addFITSKeywords(fptr, targetChip);
 
     int status = 0;
 

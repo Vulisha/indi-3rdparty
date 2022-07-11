@@ -2724,11 +2724,10 @@ bool QHYCCD::updateFilterProperties()
     return false;
 }
 
-void QHYCCD::addFITSKeywords(INDI::CCDChip *targetChip)
+void QHYCCD::addFITSKeywords(fitsfile *fptr, INDI::CCDChip *targetChip)
 {
-    INDI::CCD::addFITSKeywords(targetChip);
+    INDI::CCD::addFITSKeywords(fptr, targetChip);
     int status = 0;
-    auto fptr = *targetChip->fitsFilePointer();
 
     if (HasGain)
     {

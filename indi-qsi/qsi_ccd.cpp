@@ -910,11 +910,10 @@ int QSICCD::grabImage()
     return 0;
 }
 
-void QSICCD::addFITSKeywords(INDI::CCDChip *targetChip)
+void QSICCD::addFITSKeywords(fitsfile *fptr, INDI::CCDChip *targetChip)
 {
-    INDI::CCD::addFITSKeywords(targetChip);
+    INDI::CCD::addFITSKeywords(fptr, targetChip);
 
-    auto fptr = *targetChip->fitsFilePointer();
     int status = 0;
     double electronsPerADU;
 

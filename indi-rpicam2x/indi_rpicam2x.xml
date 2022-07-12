@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<driversList>
+<devGroup group="CCDs">
+	<device label="RPI Camera 2x" manufacturer="Others">
+        <driver name="RPI Camera 2x">indi_rpicam2x</driver>
+        <version>1.3</version>
+	</device>
+</devGroup>
+</driversList>

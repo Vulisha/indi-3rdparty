@@ -1,8 +1,8 @@
 cmake_minimum_required (VERSION 3.0)
 project (libomegonprocam)
 
-# Using ToupCamera SDK Version: 51.20268.20220209
-set (LIBOMEGONPROCAM_VERSION "1.0.0")
+# Using ToupCamera SDK Version: 53.21120.20220710
+set (LIBOMEGONPROCAM_VERSION "1.53.2")
 set (LIBOMEGONPROCAM_SOVERSION "1")
 
 list (APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules/")
@@ -18,6 +18,8 @@ if (APPLE)
 
   set_property (TARGET omegonprocam PROPERTY IMPORTED_LOCATION "mac/libomegonprocam.bin")
 
+  FIX_LIBRARY_ID("libomegonprocam" "mac/libomegonprocam.bin" "OMEGON")
+
 elseif (UNIX AND NOT WIN32)
 
   if (CMAKE_SYSTEM_PROCESSOR MATCHES "armv+")
@@ -26,8 +28,6 @@ elseif (UNIX AND NOT WIN32)
     set_property (TARGET omegonprocam PROPERTY IMPORTED_LOCATION "arm64/libomegonprocam.bin")
   elseif (CMAKE_SIZEOF_VOID_P MATCHES "8")
     set_property (TARGET omegonprocam PROPERTY IMPORTED_LOCATION "x64/libomegonprocam.bin")
-  else ()
-    set_property (TARGET omegonprocam PROPERTY IMPORTED_LOCATION "x86/libomegonprocam.bin")
   endif ()
 
   # Install udev rules

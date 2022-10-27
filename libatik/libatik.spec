@@ -1,6 +1,6 @@
 %define __cmake_in_source_build %{_vpath_builddir}
 Name: libatik
-Version:1.9.6.git
+Version:1.9.9.git
 Release: %(date -u +%%Y%%m%%d%%H%%M%%S)%{?dist}
 Summary: Instrument Neutral Distributed Interface 3rd party drivers
 
@@ -46,6 +46,7 @@ BuildRequires: pkgconfig(libusb-1.0)
 BuildRequires: pkgconfig(zlib)
 
 Provides: libatikcameras.so()(64bit)
+Provides: libatikcameras.so
 Provides: libflycapture.so.2()(64bit)
 
 %description

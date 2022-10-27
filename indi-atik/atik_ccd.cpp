@@ -232,7 +232,9 @@ bool ATIKCCD::updateProperties()
 
         if (m_CameraFlags & ARTEMIS_PROPERTIES_CAMERAFLAGS_HAS_FILTERWHEEL)
         {
+            setDriverInterface(getDriverInterface() | FILTER_INTERFACE);
             INDI::FilterInterface::updateProperties();
+            syncDriverInfo();
         }
 
         defineProperty(&VersionInfoSP);
@@ -396,6 +398,7 @@ bool ATIKCCD::setupParams()
         else
         {
             setDriverInterface(getDriverInterface() | FILTER_INTERFACE);
+            syncDriverInfo();
 
             FilterSlotN[0].min = 1;
             FilterSlotN[0].max = numFilters;
